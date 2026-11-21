@@ -1,0 +1,82 @@
+name: Lunaris Media Group - Test Backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Find project
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=$(find . -maxdepth 4 -type f -name server.js -not -path '*/node_modules/*' -print -quit)
+          if [ -z "$FILE" ]; then
+            echo 'ERROR: server.js not found in repository (depth <= 4)'
+            find . -maxdepth 3 -type f | head -80
+            exit 1
+          fi
+          DIR=$(dirname "$FILE")
+          echo "APP_DIR=$DIR" >> "$GITHUB_ENV"
+          echo "Found $FILE"
+          node --check "$FILE"
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$APP_DIR"
+          if [ -f package-lock.json ]; then npm ci; elif [ -f package.json ]; then npm install; else echo 'No package.json; using built-in Node modules'; fi
+      - name: Start server and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$APP_DIR"
+          PORT=3000 node server.js > "$RUNNER_TEMP/lunaris-server.log" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health -o "$RUNNER_TEMP/health.json"; then ok=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo 'ERROR: server did not respond to /api/health'
+            cat "$RUNNER_TEMP/lunaris-server.log"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/health.json"
+          curl -fsS http://127.0.0.1:3000/ -o "$RUNNER_TEMP/homepage.html"
+          curl -fsS http://127.0.0.1:3000/api/releases -o "$RUNNER_TEMP/releases.json"
+          echo 'All checks passed'
+      - name: Print logs
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/lunaris-server.log" 2>/dev/null || true
+          echo 'CPU:'; nproc
+          echo 'RAM:'; free -h
+          echo 'Disk:'; df -h / 
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-test-logs
+          path: |
+            ${{ runner.temp }}/lunaris-server.log
+            ${{ runner.temp }}/health.json
+            ${{ runner.temp }}/homepage.html
+            ${{ runner.temp }}/releases.json
+          if-no-files-found: ignore

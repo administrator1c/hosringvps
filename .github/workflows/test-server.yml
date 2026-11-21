@@ -1,21 +1,28 @@
 
-name: Test Lunaris Node.js Server
+name: LUNARIS MEDIA GROUP - Ubuntu VPS Test
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+    paths:
+      - 'server.js'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build.yml'
 
 permissions:
   contents: read
 
 jobs:
-  test-server:
+  ubuntu-vps:
+    name: Ubuntu Server and Node.js
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -23,18 +30,158 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Start Server
+      - name: Show VPS Information
+        shell: bash
         run: |
-          node server.js > server.log 2>&1 &
-          echo $! > server.pid
+          echo "================================"
+          echo " LUNARIS MEDIA GROUP - UBUNTU "
+          echo "================================"
 
-      - name: Test API
+          echo "=== SYSTEM ==="
+          uname -a
+          cat /etc/os-release
+
+          echo "=== CPU ==="
+          lscpu
+
+          echo "=== RAM ==="
+          free -h
+
+          echo "=== STORAGE ==="
+          df -h
+
+          echo "=== NETWORK ==="
+          hostname -I || true
+
+          echo "=== USER ==="
+          whoami
+
+          echo "=== NODE.JS ==="
+          node -v
+          npm -v
+
+      - name: Check Source Code
+        shell: bash
         run: |
-          for i in $(seq 1 20); do
-            if curl -fsS http://127.0.0.1:3000/api/health; then
+          set -euo pipefail
+
+          if [ ! -f server.js ]; then
+            echo "ERROR: server.js not found"
+            exit 1
+          fi
+
+          node --check server.js
+          echo "Source code OK"
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          else
+            echo "No dependencies required"
+          fi
+
+      - name: Start Lunaris Server
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PORT=3000 node server.js \
+            > server.log 2>&1 &
+
+          echo $! > server.pid
+          echo "Server process started"
+
+      - name: Wait for Backend
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for i in $(seq 1 30); do
+            if curl -fsS \
+              http://127.0.0.1:3000/api/health; then
+              echo ""
+              echo "Lunaris backend ONLINE"
               exit 0
             fi
+
             sleep 2
           done
+
+          echo "Backend failed"
           cat server.log
           exit 1
+
+      - name: Test Website
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsS \
+            http://127.0.0.1:3000/ \
+            -o homepage.html
+
+          test -s homepage.html
+          echo "Website HTML OK"
+
+      - name: Test Releases API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsS \
+            http://127.0.0.1:3000/api/releases \
+            -o releases.json
+
+          cat releases.json
+          echo ""
+          echo "Releases API OK"
+
+      - name: Test Create Release API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsS \
+            -X POST \
+            http://127.0.0.1:3000/api/releases \
+            -H "Content-Type: application/json" \
+            -d '{
+              "title":"GitHub Test Release",
+              "artist":"Lunaris Media Group",
+              "type":"Single",
+              "date":"2026-12-20",
+              "stores":["Spotify"]
+            }'
+
+          echo ""
+          echo "Create Release API OK"
+
+      - name: Show Server Log
+        if: always()
+        shell: bash
+        run: |
+          echo "=== SERVER LOG ==="
+
+          if [ -f server.log ]; then
+            cat server.log
+          else
+            echo "No server log available"
+          fi
+
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lunaris-vps-logs
+          path: |
+            server.log
+            homepage.html
+            releases.json
+          if-no-files-found: ignore
+          retention-days: 7
